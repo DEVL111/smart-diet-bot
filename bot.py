@@ -1,99 +1,112 @@
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+import logging
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters, ConversationHandler
 
-# Храним временные данные пользователя
-user_data = {}
+TOKEN = "7878360475:AAGRpyLWxPTwB8W65Gze6yiRRtfIonw0Q2s"
 
-# === КНОПКИ ГЛАВНОГО МЕНЮ ===
-main_menu_keyboard = [
-    ['🧮 Рассчитать КБЖУ и меню'],
-    ['📷 Проверить продукт по фото'],
-    ['⚙️ Настройки', 'ℹ️ О боте']
-]
-main_menu_markup = ReplyKeyboardMarkup(main_menu_keyboard, resize_keyboard=True)
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# === СТАРТ ===
-def start(update: Update, context: CallbackContext) -> None:
-    user = update.effective_user
-    update.message.reply_text(
-        f"👋 Привет, {user.first_name}! Я — твой личный диетолог.\n\n"
-        "Выбери, что хочешь сделать:",
-        reply_markup=main_menu_markup
+# Этапы диалога
+NAME, GENDER, AGE, HEIGHT, WEIGHT, ACTIVITY, GOAL = range(7)
+
+# Ответы для кнопок
+gender_keyboard = [['Мужчина', 'Женщина']]
+activity_keyboard = [['Минимальная', 'Низкая'], ['Средняя', 'Высокая', 'Очень высокая']]
+goal_keyboard = [['Похудение', 'Поддержание', 'Набор веса']]
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Привет! Я твой личный диетолог. Давай подберём тебе питание. Как тебя зовут?")
+    return NAME
+
+async def name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['name'] = update.message.text
+    await update.message.reply_text("Укажи свой пол:", reply_markup=ReplyKeyboardMarkup(gender_keyboard, one_time_keyboard=True, resize_keyboard=True))
+    return GENDER
+
+async def gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['gender'] = update.message.text
+    await update.message.reply_text("Сколько тебе лет?")
+    return AGE
+
+async def age(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['age'] = int(update.message.text)
+    await update.message.reply_text("Укажи свой рост в см:")
+    return HEIGHT
+
+async def height(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['height'] = int(update.message.text)
+    await update.message.reply_text("Укажи свой вес в кг:")
+    return WEIGHT
+
+async def weight(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['weight'] = float(update.message.text)
+    await update.message.reply_text("Какой у тебя уровень активности?", reply_markup=ReplyKeyboardMarkup(activity_keyboard, one_time_keyboard=True, resize_keyboard=True))
+    return ACTIVITY
+
+async def activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['activity'] = update.message.text
+    await update.message.reply_text("Какова твоя цель?", reply_markup=ReplyKeyboardMarkup(goal_keyboard, one_time_keyboard=True, resize_keyboard=True))
+    return GOAL
+
+async def goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['goal'] = update.message.text
+    user = context.user_data
+
+    # Расчёт КБЖУ
+    gender_coef = 5 if user['gender'] == 'Мужчина' else -161
+    bmr = 10 * user['weight'] + 6.25 * user['height'] - 5 * user['age'] + gender_coef
+
+    activity_levels = {
+        'Минимальная': 1.2,
+        'Низкая': 1.375,
+        'Средняя': 1.55,
+        'Высокая': 1.725,
+        'Очень высокая': 1.9
+    }
+
+    total_calories = bmr * activity_levels[user['activity']]
+
+    if user['goal'] == 'Похудение':
+        total_calories -= 300
+    elif user['goal'] == 'Набор веса':
+        total_calories += 300
+
+    # Белки, жиры, углеводы (стандартное соотношение)
+    proteins = round((total_calories * 0.3) / 4)
+    fats = round((total_calories * 0.25) / 9)
+    carbs = round((total_calories * 0.45) / 4)
+
+    await update.message.reply_text(
+        f"{user['name']}, ты {user['gender'].lower()}, {user['age']} лет.\n"
+        f"Твоя цель: {user['goal'].lower()}.\n"
+        f"Рассчитанная суточная норма:\n"
+        f"🔸 Калории: {int(total_calories)} ккал\n"
+        f"🔸 Белки: {proteins} г\n"
+        f"🔸 Жиры: {fats} г\n"
+        f"🔸 Углеводы: {carbs} г\n\n"
+        f"Скоро сможешь получить полноценное меню!"
+    )
+    return ConversationHandler.END
+
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, name)],
+            GENDER: [MessageHandler(filters.TEXT & ~filters.COMMAND, gender)],
+            AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, age)],
+            HEIGHT: [MessageHandler(filters.TEXT & ~filters.COMMAND, height)],
+            WEIGHT: [MessageHandler(filters.TEXT & ~filters.COMMAND, weight)],
+            ACTIVITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, activity)],
+            GOAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, goal)],
+        },
+        fallbacks=[]
     )
 
-# === МЕНЮ ===
-def handle_menu(update: Update, context: CallbackContext) -> None:
-    text = update.message.text
-    chat_id = update.message.chat_id
-
-    if text == '🧮 Рассчитать КБЖУ и меню':
-        user_data[chat_id] = {}
-        update.message.reply_text("Как тебя зовут?", reply_markup=ReplyKeyboardRemove())
-
-        # Устанавливаем следующий шаг — имя
-        context.user_data['step'] = 'name'
-
-    elif text == '📷 Проверить продукт по фото':
-        update.message.reply_text("Отправь фото продукта или его состава.")
-
-    elif text == '⚙️ Настройки':
-        update.message.reply_text("Раздел в разработке. Скоро будет доступен.")
-
-    elif text == 'ℹ️ О боте':
-        update.message.reply_text(
-            "🤖 Я — умный диетолог. Рассчитываю КБЖУ, составляю меню, анализирую продукты. "
-            "Работаю на научной основе. В разработке 💪"
-        )
-
-# === ОБРАБОТКА СООБЩЕНИЙ ПОШАГОВО ===
-def handle_text(update: Update, context: CallbackContext) -> None:
-    chat_id = update.message.chat_id
-    text = update.message.text
-    step = context.user_data.get('step')
-
-    if step == 'name':
-        user_data[chat_id]['name'] = text
-        update.message.reply_text("Укажи свой пол:", reply_markup=ReplyKeyboardMarkup([['Мужчина', 'Женщина']], resize_keyboard=True))
-        context.user_data['step'] = 'gender'
-
-    elif step == 'gender':
-        user_data[chat_id]['gender'] = text
-        update.message.reply_text("Сколько тебе лет?")
-        context.user_data['step'] = 'age'
-
-    elif step == 'age':
-        if not text.isdigit():
-            update.message.reply_text("Пожалуйста, введи число.")
-            return
-        user_data[chat_id]['age'] = int(text)
-        name = user_data[chat_id]['name']
-        gender = user_data[chat_id]['gender']
-        age = user_data[chat_id]['age']
-
-        gender_word = "мужчина" if gender == "Мужчина" else "женщина"
-        age_word = f"{age} лет" if 11 <= age % 100 <= 19 else (
-            f"{age} год" if age % 10 == 1 else (
-                f"{age} года" if 2 <= age % 10 <= 4 else f"{age} лет"
-            )
-        )
-
-        update.message.reply_text(
-            f"Отлично, {name}! Ты — {gender_word}, {age_word}.\nСкоро продолжим расчёт.",
-            reply_markup=main_menu_markup
-        )
-        context.user_data.clear()
-
-# === ЗАПУСК БОТА ===
-def main():
-    updater = Updater("7878360475:AAGRpyLWxPTwB8W65Gze6yiRRtfIonw0Q2s", use_context=True)
-    dp = updater.dispatcher
-
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_menu))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_text))
-
-    updater.start_polling()
-    updater.idle()
+    app.add_handler(conv_handler)
+    app.run_polling()
 
 if __name__ == '__main__':
     main()
